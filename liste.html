@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Links Übersicht</title>
+  <style>
+    /* Mobilfreundlich, große Touch-Buttons */
+    :root { --bg:#f7f7f8; --btn:#007aff; --text:#ffffff; --gap:12px; }
+    body { margin:0; font-family:system-ui,Arial; background:var(--bg); padding:16px; display:flex; flex-direction:column; min-height:100vh; box-sizing:border-box; }
+    header { margin-bottom:12px; }
+    h1 { font-size:20px; margin:0; }
+    #list { display:flex; flex-direction:column; gap:var(--gap); width:100%; max-width:720px; margin:0 auto; }
+    .linkBtn {
+      background:var(--btn); color:var(--text); padding:16px; border-radius:12px; text-align:center;
+      font-size:18px; text-decoration:none; display:block; box-shadow:0 2px 6px rgba(0,0,0,0.08);
+      word-break:break-word;
+    }
+    .empty { color:#666; text-align:center; margin-top:24px; }
+    /* Safe area for phones with notch */
+    .spacer { height:env(safe-area-inset-bottom); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Meine Links</h1>
+  </header>
+
+  <main id="list" aria-live="polite">
+    <div class="empty">Lade Links…</div>
+  </main>
+
+  <div class="spacer" aria-hidden="true"></div>
+
+  <!-- Firebase v9 modular -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import {
+      getFirestore, collection, query, orderBy, onSnapshot
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // --- ERSETZE mit deinen Firebase-Projektdaten ---
+    const firebaseConfig = {
+    apiKey: "AIzaSyAXAKrNc6ZoLEKXlnmzbVNoIgTB1U94vEs",
+    authDomain: "hsswbu-b556d.firebaseapp.com",
+    projectId: "hsswbu-b556d",
+      // optional: storageBucket, messagingSenderId, appId
+    };
+
+    // Init Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Anonyme Anmeldung, damit Firestore-Regeln mit request.auth != null greifen
+    signInAnonymously(auth).catch(e => {
+      console.warn('Anon sign-in fehlgeschlagen', e);
+      // Falls Auth nicht nötig ist, kann die Seite trotzdem weiter versuchen zu laden
+    });
+
+    const listEl = document.getElementById('list');
+
+    // Query: sortiere nach position (wie in deiner Haupt-App)
+    const q = query(collection(db, 'buttons'), orderBy('position'));
+
+    // Echtzeit-Listener: baut die Liste neu auf, wenn sich Daten ändern
+    onSnapshot(q, snapshot => {
+      listEl.innerHTML = ''; // leeren
+      if (snapshot.empty) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'Keine Links vorhanden';
+        listEl.appendChild(empty);
+        return;
+      }
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        const label = data.label || 'Ohne Titel';
+        const url = data.url || '#';
+        // Erstelle anklickbaren Button (öffnen in neuem Tab)
+        const a = document.createElement('a');
+        a.className = 'linkBtn';
+        a.textContent = label;
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        // Optional: kurze Prüfung, falls url kein Schema hat, füge https:// hinzu
+        a.addEventListener('click', (e) => {
+          if (!/^https?:\/\//i.test(url)) {
+            // Falls Link kein Schema hat, öffne mit https
+            e.preventDefault();
+            window.open('https://' + url, '_blank', 'noopener');
+          }
+        });
+        listEl.appendChild(a);
+      });
+    }, err => {
+      // Fehler beim Laden anzeigen
+      listEl.innerHTML = '';
+      const errEl = document.createElement('div');
+      errEl.className = 'empty';
+      errEl.textContent = 'Fehler beim Laden der Links. Prüfe Konsole.';
+      listEl.appendChild(errEl);
+      console.error('Firestore onSnapshot Fehler:', err);
+    });
+  </script>
+</body>
+</html>
