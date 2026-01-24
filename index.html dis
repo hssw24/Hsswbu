@@ -1,0 +1,273 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Multi-Listen Buttons Manager</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding:16px; max-width:720px; margin:auto; }
+    h3 { margin-top:0; }
+    .row { display:flex; gap:8px; align-items:center; margin-bottom:12px; }
+    input, select { padding:10px; font-size:16px; border-radius:8px; border:1px solid #ccc; }
+    button { padding:10px 12px; font-size:16px; border-radius:8px; border:none; background:#0a84ff; color:#fff; }
+    #list { display:flex; flex-direction:column; gap:10px; margin-top:8px; }
+    .item { background:#007aff; color:#fff; padding:14px; border-radius:10px; display:flex; justify-content:space-between; align-items:center; font-size:16px; touch-action:manipulation; }
+    .small { background:#ff3b30; padding:8px 10px; border-radius:8px; color:#fff; cursor:pointer; }
+    .label { flex:1; margin-right:10px; word-break:break-word; }
+    .muted { color:#666; font-size:14px; }
+  </style>
+</head>
+<body>
+  <h3>Multi-Listen Buttons Manager</h3>
+
+  <!-- Liste auswählen / neu anlegen -->
+  <div class="row">
+    <select id="listSelect" aria-label="Liste wählen"></select>
+    <input id="newListName" placeholder="Neue Liste (Name)" />
+    <button id="createList">Liste anlegen</button>
+    <button id="deleteList" style="background:#ff3b30">Liste löschen</button>
+  </div>
+
+  <!-- Button hinzufügen (für die aktuell ausgewählte Liste) -->
+  <div class="row">
+    <input id="label" placeholder="Beschriftung" />
+    <input id="link" placeholder="https://..." />
+    <button id="add">Hinzufügen</button>
+  </div>
+
+  <div id="list" aria-live="polite">
+    <div class="muted">Wähle eine Liste oder lege eine neue an.</div>
+  </div>
+
+  <!-- SortableJS -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+
+  <!-- Firebase v9 modular -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import {
+      getFirestore, collection, addDoc, onSnapshot, doc, deleteDoc, updateDoc,
+      query, orderBy, getDocs, where, limit
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // --- ERSETZE mit deinen Firebase-Projektdaten ---
+    const firebaseConfig = {
+    apiKey: "AIzaSyAXAKrNc6ZoLEKXlnmzbVNoIgTB1U94vEs",
+    authDomain: "hsswbu-b556d.firebaseapp.com",
+    projectId: "hsswbu-b556d"
+    };
+
+    // Init Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    signInAnonymously(auth).catch(e => console.warn('Anon sign-in failed', e));
+
+    // DOM
+    const listEl = document.getElementById('list');
+    const labelIn = document.getElementById('label');
+    const linkIn = document.getElementById('link');
+    const addBtn = document.getElementById('add');
+
+    const listSelect = document.getElementById('listSelect');
+    const newListName = document.getElementById('newListName');
+    const createListBtn = document.getElementById('createList');
+    const deleteListBtn = document.getElementById('deleteList');
+
+    // Aktuelle Liste (listId) merken
+    let currentListId = null;
+
+    // Hilfsfunktionen
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function createItemElement(id, data) {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.dataset.id = id;
+      el.innerHTML = `
+        <div class="label" role="button" tabindex="0">${escapeHtml(data.label)}</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="small" data-action="open">Öffnen</div>
+          <div class="small" data-action="delete">Löschen</div>
+        </div>`;
+      el.querySelector('[data-action="open"]').onclick = () => {
+        const url = data.url || '#';
+        if (!/^https?:\/\//i.test(url)) window.open('https://' + url, '_blank', 'noopener');
+        else window.open(url, '_blank', 'noopener');
+      };
+      el.querySelector('[data-action="delete"]').onclick = async () => {
+        if (!confirm('Löschen?')) return;
+        await deleteDoc(doc(db, 'buttons', id));
+      };
+      return el;
+    }
+
+    // --- Listenverwaltung: Listen in <select> anzeigen ---
+    // Echtzeit-Listener für 'lists' Collection
+    onSnapshot(collection(db, 'lists'), snapshot => {
+      // Baue Select neu auf
+      listSelect.innerHTML = '';
+      snapshot.forEach(docSnap => {
+        const d = docSnap.data();
+        const opt = document.createElement('option');
+        opt.value = docSnap.id;
+        opt.textContent = d.name || '(ohne Name)';
+        listSelect.appendChild(opt);
+      });
+      // Falls keine Liste existiert, lege eine Default-Liste an
+      if (listSelect.options.length === 0) {
+        createDefaultList();
+      } else {
+        // Wenn currentListId nicht gesetzt oder nicht mehr vorhanden, wähle erste
+        if (!currentListId || !Array.from(listSelect.options).some(o => o.value === currentListId)) {
+          currentListId = listSelect.options[0].value;
+        }
+        listSelect.value = currentListId;
+        // Trigger initiales Laden der Buttons für die aktuelle Liste
+        loadButtonsForCurrentList();
+      }
+    });
+
+    // Default-Liste anlegen (nur wenn keine existiert)
+    async function createDefaultList() {
+      try {
+        const docRef = await addDoc(collection(db, 'lists'), { name: 'Meine Liste' });
+        currentListId = docRef.id;
+      } catch (err) {
+        console.error('Fehler beim Anlegen der Default-Liste', err);
+      }
+    }
+
+    // Erstelle neue Liste
+    createListBtn.onclick = async () => {
+      const name = newListName.value.trim();
+      if (!name) return alert('Bitte Listennamen eingeben');
+      try {
+        const docRef = await addDoc(collection(db, 'lists'), { name });
+        newListName.value = '';
+        // Auswahl wird automatisch durch onSnapshot gesetzt
+        currentListId = docRef.id;
+        listSelect.value = currentListId;
+        loadButtonsForCurrentList();
+      } catch (err) {
+        console.error('Fehler beim Erstellen der Liste', err);
+        alert('Fehler beim Erstellen der Liste. Konsole prüfen.');
+      }
+    };
+
+    // Lösche aktuelle Liste und alle zugehörigen Buttons
+    deleteListBtn.onclick = async () => {
+      if (!currentListId) return;
+      if (!confirm('Liste und alle enthaltenen Buttons löschen?')) return;
+      try {
+        // 1) Lösche alle Buttons mit listId = currentListId
+        const q = query(collection(db, 'buttons'), where('listId', '==', currentListId));
+        const snaps = await getDocs(q);
+        for (const s of snaps.docs) {
+          await deleteDoc(doc(db, 'buttons', s.id));
+        }
+        // 2) Lösche die Liste selbst
+        await deleteDoc(doc(db, 'lists', currentListId));
+        currentListId = null;
+      } catch (err) {
+        console.error('Fehler beim Löschen der Liste', err);
+        alert('Fehler beim Löschen. Konsole prüfen.');
+      }
+    };
+
+    // Wechsel der Auswahl
+    listSelect.onchange = () => {
+      currentListId = listSelect.value;
+      loadButtonsForCurrentList();
+    };
+
+    // --- Buttons: hinzufügen, anzeigen, sortieren ---
+    // Add-Button: neues Button-Dokument mit listId speichern; neue Buttons oben platzieren
+    addBtn.onclick = async () => {
+      const label = labelIn.value.trim();
+      const url = linkIn.value.trim();
+      if (!label || !url) return alert('Bitte Beschriftung und Link eingeben');
+      if (!currentListId) return alert('Keine Liste ausgewählt');
+
+      try {
+        // Finde kleinste position in dieser Liste
+        const qMin = query(collection(db, 'buttons'), where('listId', '==', currentListId), orderBy('position', 'asc'), limit(1));
+        const snap = await getDocs(qMin);
+        let newPosition;
+        if (snap.empty) newPosition = 0;
+        else {
+          const minPos = snap.docs[0].data().position ?? 0;
+          newPosition = minPos - 1; // oben einfügen
+        }
+        await addDoc(collection(db, 'buttons'), { label, url, position: newPosition, listId: currentListId });
+        labelIn.value = ''; linkIn.value = '';
+      } catch (err) {
+        console.error('Fehler beim Hinzufügen', err);
+        alert('Fehler beim Hinzufügen. Konsole prüfen.');
+      }
+    };
+
+    // Live-Listener für Buttons der aktuellen Liste
+    let buttonsUnsub = null;
+    function loadButtonsForCurrentList() {
+      // Entferne alten Listener
+      if (buttonsUnsub) { buttonsUnsub(); buttonsUnsub = null; }
+      if (!currentListId) {
+        listEl.innerHTML = '<div class="muted">Keine Liste ausgewählt.</div>';
+        return;
+      }
+      // Query: nur Buttons mit dieser listId, sortiert nach position
+      const q = query(collection(db, 'buttons'), where('listId', '==', currentListId), orderBy('position'));
+      buttonsUnsub = onSnapshot(q, snapshot => {
+        listEl.innerHTML = '';
+        if (snapshot.empty) {
+          listEl.innerHTML = '<div class="muted">Keine Buttons in dieser Liste.</div>';
+          initSortable(); // trotzdem initialisieren
+          return;
+        }
+        snapshot.forEach(docSnap => {
+          const id = docSnap.id;
+          const data = docSnap.data();
+          const el = createItemElement(id, data);
+          listEl.appendChild(el);
+        });
+        initSortable();
+      }, err => {
+        console.error('Fehler beim Laden der Buttons', err);
+        listEl.innerHTML = '<div class="muted">Fehler beim Laden. Konsole prüfen.</div>';
+      });
+    }
+
+    // Sortable für die sichtbare Liste: nach Drag neue positionen speichern
+    let sortable = null;
+    function initSortable() {
+      if (sortable) { sortable.destroy(); sortable = null; }
+      // eslint-disable-next-line no-undef
+      sortable = new Sortable(listEl, {
+        animation: 150,
+        handle: '.label',
+        onEnd: async () => {
+          const children = Array.from(listEl.children);
+          try {
+            for (let i = 0; i < children.length; i++) {
+              const id = children[i].dataset.id;
+              const ref = doc(db, 'buttons', id);
+              await updateDoc(ref, { position: i });
+            }
+          } catch (err) {
+            console.error('Fehler beim Speichern der Reihenfolge', err);
+            alert('Fehler beim Speichern der Reihenfolge. Konsole prüfen.');
+          }
+        }
+      });
+    }
+
+    // Initial: lade Listen (onSnapshot oben kümmert sich darum)
+    // Hinweis: onSnapshot(collection(db,'lists')) wurde bereits gesetzt weiter oben.
+
+  </script>
+</body>
+</html>
