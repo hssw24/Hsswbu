@@ -19,7 +19,6 @@
     .meta { color:var(--muted); font-size:14px; margin-bottom:8px; text-align:center; }
     .empty { color:var(--muted); text-align:center; margin-top:24px; }
     .spacer { height:env(safe-area-inset-bottom); }
-    .debug { font-size:12px; color:#999; text-align:center; margin-top:8px; }
   </style>
 </head>
 <body>
@@ -54,7 +53,13 @@
     const auth = getAuth(app);
     const db = getFirestore(app);
 
-    // DOM
+    // Optional: anonyme Anmeldung, falls Firestore-Regeln request.auth != null verlangen
+    if (firebaseConfig.authDomain) {
+      signInAnonymously(auth).catch(e => {
+        console.warn('Anon sign-in fehlgeschlagen', e);
+      });
+    }
+
     const listEl = document.getElementById('list');
     const titleEl = document.getElementById('title');
     const subtitleEl = document.getElementById('subtitle');
@@ -64,19 +69,11 @@
       const params = new URLSearchParams(location.search);
       return params.get(name);
     }
-    function stripQuotes(s) {
-      if (!s) return s;
-      // Dekodiere URL-Komponenten und entferne führende/trailing Anführungszeichen (einfach)
-      let t = decodeURIComponent(s);
-      if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) {
-        t = t.slice(1, -1);
-      }
-      return t;
-    }
     function createLinkElement(label, url) {
       const a = document.createElement('a');
       a.className = 'linkBtn';
       a.textContent = label || 'Ohne Titel';
+      // Öffne in neuem Tab; falls kein Schema, füge https:// hinzu
       a.href = /^https?:\/\//i.test(url) ? url : 'https://' + url;
       a.target = '_blank';
       a.rel = 'noopener noreferrer';
@@ -90,11 +87,9 @@
       listEl.appendChild(d);
     }
 
-    // Lese Parameter (behandle listId mit oder ohne Anführungszeichen)
-    const rawListId = getQueryParam('listId');
-    const rawListName = getQueryParam('listName');
-    const listIdParam = stripQuotes(rawListId);
-    const listNameParam = stripQuotes(rawListName);
+    // Bestimme Liste: bevorzugt listId, sonst listName
+    const listIdParam = getQueryParam('listId');
+    const listNameParam = getQueryParam('listName');
 
     if (!listIdParam && !listNameParam) {
       titleEl.textContent = 'Keine Liste angegeben';
@@ -103,27 +98,7 @@
       throw new Error('Keine listId oder listName in URL');
     }
 
-    // Versuche anonyme Anmeldung nur, wenn authDomain vorhanden ist
-    if (firebaseConfig && firebaseConfig.authDomain) {
-      signInAnonymously(auth).then(() => {
-        // angemeldet (oder bereits angemeldet)
-      }).catch(e => {
-        // Fehler nicht laut in Konsole werfen, aber Debug-Hinweis anzeigen
-        console.warn('Anonyme Anmeldung fehlgeschlagen (unterdrückt):', e && e.code ? e.code : e);
-        const dbg = document.createElement('div');
-        dbg.className = 'debug';
-        dbg.textContent = 'Hinweis: Anonyme Anmeldung fehlgeschlagen. Falls Firestore-Regeln Auth verlangen, aktiviere Auth in Firebase.';
-        document.body.appendChild(dbg);
-      });
-    } else {
-      // authDomain fehlt: zeige Hinweis, aber versuche weiter (falls Regeln offen sind)
-      const dbg = document.createElement('div');
-      dbg.className = 'debug';
-      dbg.textContent = 'Hinweis: firebaseConfig.authDomain fehlt; anonyme Anmeldung übersprungen.';
-      document.body.appendChild(dbg);
-    }
-
-    // Lade Buttons: entweder per listId oder per listName (suche)
+    // Wenn listId vorhanden: direkte Query auf buttons
     if (listIdParam) {
       titleEl.textContent = 'Links';
       subtitleEl.textContent = 'Liste: ' + listIdParam;
@@ -133,9 +108,10 @@
       }, err => {
         console.error('Fehler beim Laden der Buttons', err);
         subtitleEl.textContent = 'Fehler beim Laden. Prüfe Konsole.';
-        showMessage('Fehler beim Laden der Links. Prüfe Firestore‑Index/Regeln.');
+        showMessage('Fehler beim Laden der Links.');
       });
     } else {
+      // listName angegeben: finde die erste Liste mit diesem Namen, dann lade Buttons
       (async () => {
         try {
           const listsQ = query(collection(db, 'lists'), where('name', '==', listNameParam), limit(1));
@@ -165,12 +141,14 @@
       })();
     }
 
+    // Rendert Buttons in der Seite
     function renderButtons(items) {
       listEl.innerHTML = '';
       if (!items || items.length === 0) {
         showMessage('Keine Links in dieser Liste.');
         return;
       }
+      // Erstelle Buttons in Reihenfolge
       items.forEach(it => {
         const a = createLinkElement(it.label, it.url);
         listEl.appendChild(a);
