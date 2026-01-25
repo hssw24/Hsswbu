@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Links Ansicht</title>
+  <style>
+    :root { --bg:#f7f8fa; --card:#007aff; --text:#fff; --muted:#666; }
+    html,body { height:100%; margin:0; }
+    body { font-family:system-ui,Arial; background:var(--bg); padding:16px; box-sizing:border-box; display:flex; flex-direction:column; align-items:stretch; min-height:100vh; }
+    header { margin-bottom:12px; }
+    h1 { font-size:18px; margin:0; color:#111; }
+    #list { display:flex; flex-direction:column; gap:12px; width:100%; max-width:720px; margin:0 auto; flex:1; }
+    .linkBtn {
+      background:var(--card); color:var(--text); padding:16px; border-radius:12px; text-align:center;
+      font-size:18px; text-decoration:none; display:block; box-shadow:0 4px 12px rgba(0,0,0,0.08);
+      word-break:break-word; -webkit-tap-highlight-color: transparent;
+    }
+    .meta { color:var(--muted); font-size:14px; margin-bottom:8px; text-align:center; }
+    .empty { color:var(--muted); text-align:center; margin-top:24px; }
+    .spacer { height:env(safe-area-inset-bottom); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 id="title">Links</h1>
+    <div id="subtitle" class="meta">Lädt…</div>
+  </header>
+
+  <main id="list" aria-live="polite">
+    <div class="empty">Warte auf Daten...</div>
+  </main>
+
+  <div class="spacer" aria-hidden="true"></div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-auth.js";
+    import {
+      getFirestore, collection, query, where, orderBy, onSnapshot, getDocs, limit
+    } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+    // --- ERSETZE mit deinen Firebase-Projektdaten ---
+    const firebaseConfig = {
+    apiKey: "AIzaSyAXAKrNc6ZoLEKXlnmzbVNoIgTB1U94vEs",
+    authDomain: "hsswbu-b556d.firebaseapp.com",
+    projectId: "hsswbu-b556d"
+      // optional: storageBucket, messagingSenderId, appId
+    };
+
+    // Init Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Optional: anonyme Anmeldung, falls Firestore-Regeln request.auth != null verlangen
+    if (firebaseConfig.authDomain) {
+      signInAnonymously(auth).catch(e => {
+        console.warn('Anon sign-in fehlgeschlagen', e);
+      });
+    }
+
+    const listEl = document.getElementById('list');
+    const titleEl = document.getElementById('title');
+    const subtitleEl = document.getElementById('subtitle');
+
+    // Hilfsfunktionen
+    function getQueryParam(name) {
+      const params = new URLSearchParams(location.search);
+      return params.get(name);
+    }
+    function createLinkElement(label, url) {
+      const a = document.createElement('a');
+      a.className = 'linkBtn';
+      a.textContent = label || 'Ohne Titel';
+      // Öffne in neuem Tab; falls kein Schema, füge https:// hinzu
+      a.href = /^https?:\/\//i.test(url) ? url : 'https://' + url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      return a;
+    }
+    function showMessage(msg) {
+      listEl.innerHTML = '';
+      const d = document.createElement('div');
+      d.className = 'empty';
+      d.textContent = msg;
+      listEl.appendChild(d);
+    }
+
+    // Bestimme Liste: bevorzugt listId, sonst listName
+    const listIdParam = getQueryParam('listId');
+    const listNameParam = getQueryParam('listName');
+
+    if (!listIdParam && !listNameParam) {
+      titleEl.textContent = 'Keine Liste angegeben';
+      subtitleEl.textContent = 'Füge ?listId=DEINE_ID oder ?listName=NAME zur URL hinzu';
+      showMessage('Keine Liste ausgewählt.');
+      throw new Error('Keine listId oder listName in URL');
+    }
+
+    // Wenn listId vorhanden: direkte Query auf buttons
+    if (listIdParam) {
+      titleEl.textContent = 'Links';
+      subtitleEl.textContent = 'Liste: ' + listIdParam;
+      const q = query(collection(db, 'buttons'), where('listId', '==', listIdParam), orderBy('position'));
+      onSnapshot(q, snapshot => {
+        renderButtons(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+      }, err => {
+        console.error('Fehler beim Laden der Buttons', err);
+        subtitleEl.textContent = 'Fehler beim Laden. Prüfe Konsole.';
+        showMessage('Fehler beim Laden der Links.');
+      });
+    } else {
+      // listName angegeben: finde die erste Liste mit diesem Namen, dann lade Buttons
+      (async () => {
+        try {
+          const listsQ = query(collection(db, 'lists'), where('name', '==', listNameParam), limit(1));
+          const snaps = await getDocs(listsQ);
+          if (snaps.empty) {
+            titleEl.textContent = 'Liste nicht gefunden';
+            subtitleEl.textContent = listNameParam;
+            showMessage('Keine Liste mit diesem Namen gefunden.');
+            return;
+          }
+          const listDoc = snaps.docs[0];
+          const foundId = listDoc.id;
+          titleEl.textContent = listDoc.data().name || 'Links';
+          subtitleEl.textContent = 'Liste: ' + foundId;
+          const q = query(collection(db, 'buttons'), where('listId', '==', foundId), orderBy('position'));
+          onSnapshot(q, snapshot => {
+            renderButtons(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+          }, err => {
+            console.error('Fehler beim Laden der Buttons', err);
+            subtitleEl.textContent = 'Fehler beim Laden. Prüfe Konsole.';
+            showMessage('Fehler beim Laden der Links.');
+          });
+        } catch (err) {
+          console.error('Fehler beim Finden der Liste', err);
+          showMessage('Fehler beim Finden der Liste. Prüfe Konsole.');
+        }
+      })();
+    }
+
+    // Rendert Buttons in der Seite
+    function renderButtons(items) {
+      listEl.innerHTML = '';
+      if (!items || items.length === 0) {
+        showMessage('Keine Links in dieser Liste.');
+        return;
+      }
+      // Erstelle Buttons in Reihenfolge
+      items.forEach(it => {
+        const a = createLinkElement(it.label, it.url);
+        listEl.appendChild(a);
+      });
+    }
+  </script>
+</body>
+</html>
